@@ -80,7 +80,7 @@ list[Path]:
                 files_found_by_path.setdefault(p, []).append(file)
                 files_found_by_year.setdefault(file_match['year'], []).append(file)
 
-        if len(files_found_by_path[p]) > 0:
+        if files_found_by_path.get(p, None):
             print(f"Found {files_found_by_path[p]} in {p}.")
         else:
             print(f"Found no files in {p}")
