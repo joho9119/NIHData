@@ -15,7 +15,7 @@ NIH_CACHE_ENV_FILE_NAME = f".nih_data_cache.env"
 
 
 def find_nih_data(check_locations: str | Path | list[str | Path] | None = None, suppress_warnings: bool = False) -> \
-list[Path]:
+        list[Path]:
     """
     Assumes that downloaded files follow the typical NIH data file name structure.
     ``RePORTER_PRJ_C_FY{year}``
@@ -106,6 +106,7 @@ list[Path]:
     if year_gaps:
         print(f"Noted the following gaps in existing data: ")
         print("\n".join(year_gaps))
+        print("")
 
     current_year_post_mil = dt.datetime.now().year - 2000
     # Assume that last year's data is published roughly around start of the current year
@@ -142,6 +143,11 @@ list[Path]:
     return sorted(files_found)
 
 
+def _calculate_total_file_size(files: list[Path]):
+    """:returns: Total size of files in provided path list (in MB)."""
+    return sum(f.stat().st_size for f in files) / (1000 * 1000)
+
+
 def build_nih_data_cache(
         cache_path: str | Path | None = None,
         file_locations: str | Path | list[str | Path] | None = None,
@@ -159,14 +165,16 @@ def build_nih_data_cache(
     cache_path = CacheHandler.create_cache_directory(cache_path)
     nih_data_files = find_nih_data(file_locations)
     files_pulled_from = {f.root for f in nih_data_files}
-    files_pulled_from.discard(cache_path)  # Discard instead of remove so we're not throwing an error.
+    files_pulled_from.discard(cache_path.name)  # Discard instead of remove so we're not throwing an error.
 
     existing_cache = {f.name for f in cache_path.iterdir() if nih_exporter_file_regex.search(f.name)}
+    print(f"Existing files in cache: {existing_cache}")
     cached_file_paths: list[Path] = []
+    to_delete: list[Path] = []
 
     for file in nih_data_files:
-        if file.root == cache_path:
-            # Skip files already found in the cache.
+        if file.parent == cache_path:
+            print(f"{file} is already in cache. Skipping copy...")
             continue
         elif (file.name in existing_cache and overwrite_cache) or file.name not in existing_cache:
             print(f"Copying {file.name} to {cache_path}")
@@ -200,7 +208,4 @@ def build_nih_data_cache(
 
 if __name__ == "__main__":
     build_nih_data_cache()
-
-
-
-
+    # CacheHandler.delete_cache_directory()
