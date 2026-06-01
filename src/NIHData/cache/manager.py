@@ -76,7 +76,7 @@ list[Path]:
             if not all((file.exists(), (file.is_file(), file.stat().st_size > 0))):
                 continue
             file_match = nih_exporter_file_regex.search(file.name)
-            if file_match and file_match['suffix'] == '.zip':
+            if file_match and file_match['filetype'] == '.zip':
                 files_found_by_path.setdefault(p, []).append(file)
                 files_found_by_year.setdefault(file_match['year'], []).append(file)
 
