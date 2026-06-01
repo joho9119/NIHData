@@ -161,7 +161,7 @@ def build_nih_data_cache(
     files_pulled_from = {f.root for f in nih_data_files}
     files_pulled_from.discard(cache_path)  # Discard instead of remove so we're not throwing an error.
 
-    existing_cache = {f.name for f in cache_path.iterdir() if nih_exporter_file_regex.match(f)}
+    existing_cache = {f.name for f in cache_path.iterdir() if nih_exporter_file_regex.search(f.name)}
     cached_file_paths: list[Path] = []
 
     for file in nih_data_files:
