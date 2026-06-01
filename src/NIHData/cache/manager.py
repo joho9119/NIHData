@@ -176,10 +176,24 @@ def build_nih_data_cache(
             print(f"{file.name} is already in cache. Skipping...")
             continue
 
-    print(
-        f"Copied {len(cached_file_paths)} files to cache. "
-        f"| Total bytes copied: {sum(f.stat().st_size for f in cached_file_paths)}"
-    )
+        if delete_originals:
+            # Files from the cache are already skipped with the first guard, so this doesn't risk unlinking already
+            # cached files.
+            to_delete.append(file)
+
+    completion_message = [
+        f"Copied {len(cached_file_paths) if cached_file_paths else "no"} files to cache. ",
+        f"Total MB copied: {_calculate_total_file_size(cached_file_paths)} MB",
+    ]
+    if to_delete:
+        completion_message.append(
+            f"Deleted {len(to_delete)} files from {", ".join({p.parent.name for p in to_delete})}. "
+            f"Total MB cleared: {_calculate_total_file_size(to_delete)}"
+        )
+        for p in to_delete:
+            p.unlink()
+
+    print("\n".join(completion_message))
 
     return cached_file_paths
 
