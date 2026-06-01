@@ -9,7 +9,7 @@ NIH_CACHE_ENV_FILE_PATH = Path.home() / NIH_CACHE_ENV_FILE_NAME
 def _read_env_file():
     if not NIH_CACHE_ENV_FILE_PATH.exists():
         raise EnvFileDoesNotExist(
-            "Could not find env file that points to cache directory. Create the cache directory first."
+            "Could not find env file that points to cache directory. Create the environment file first."
         )
 
     with open(NIH_CACHE_ENV_FILE_PATH, 'r', encoding='utf-8') as envfile:
