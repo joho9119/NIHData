@@ -1,17 +1,37 @@
+import csv
 import datetime as dt
+import io
 import re
+import zipfile
+from collections.abc import Generator
 from pathlib import Path
 
-from NIHData.cache import env as CacheHandler
-from NIHData.errors import EnvFileDoesNotExist, EnvVarDoesNotExist, CacheDoesNotExist, NoValidSearchLocations
+from NIHData.generated.variables import *
+# imports all NIH Exporter Names + column class
 
-year_search = re.compile(r"(?P<year>\d{4})")
+import polars as pl
+
+from NIHData.cache import env as CacheHandler
+from NIHData.parser.objects import build_project_instance
+from NIHData.parser.fields import parse_data
+from NIHData.types import NIHExporterHeader, NIH_HEADER_SET, NIHExporterRow, NIHExporterRowHeader
+from NIHData.errors import (
+    EnvFileDoesNotExist, EnvVarDoesNotExist,
+    CacheDoesNotExist, NoValidSearchLocations,
+    NoCsvInZipFile,
+)
+
 nih_exporter_file_regex = re.compile(r"^RePORTER_PRJ_C_FY(?P<year>\d{4})(?P<filetype>\.[^0-9.]+)$", re.I)
 """Name of the typical file target. The csv file within the zip also follows this naming convention."""
 
 NIH_DATA_CACHE = ".nih_data_cache"
 NIH_CACHE_ENV_VAR_NAME = 'NIH_DATA_CACHE_DIR'
 NIH_CACHE_ENV_FILE_NAME = f".nih_data_cache.env"
+
+
+def pl_col(name: NIHExporterHeader, *more_names: NIHExporterHeader) -> pl.Expr:
+    """Provides autocomplete for pl.col using NIHExporterHeader literal."""
+    return pl.col(name, *more_names)
 
 
 def find_nih_data(check_locations: str | Path | list[str | Path] | None = None, suppress_warnings: bool = False) -> \
@@ -50,13 +70,14 @@ def find_nih_data(check_locations: str | Path | list[str | Path] | None = None, 
     try:
         cache_dir = CacheHandler.get_cache_path()
         valid_to_search.append(cache_dir)
-    except CacheDoesNotExist | EnvFileDoesNotExist | EnvVarDoesNotExist as e:
+    except (CacheDoesNotExist, EnvFileDoesNotExist, EnvVarDoesNotExist) as e:
         cache_dir = None
         if not suppress_warnings:
             print(e)
 
     if not valid_to_search:
-        raise NoValidSearchLocations(f"Tried the following paths, but none were valid: {", ".join(check_locations)}")
+        raise NoValidSearchLocations(f"Tried the following paths, but none were valid: "
+                                     f"{", ".join(str(l) for l in check_locations)}")
     elif len(valid_to_search) == 1:
         search_start_message = f"Searching `{check_locations[0]}` for NIH exporter files."
     else:
@@ -73,7 +94,7 @@ def find_nih_data(check_locations: str | Path | list[str | Path] | None = None, 
     for p in valid_to_search:
         p: Path
         for file in p.iterdir():
-            if not all((file.exists(), (file.is_file(), file.stat().st_size > 0))):
+            if not all((file.exists(), file.is_file(), file.stat().st_size > 0)):
                 continue
             file_match = nih_exporter_file_regex.search(file.name)
             if file_match and file_match['filetype'] == '.zip':
@@ -206,6 +227,129 @@ def build_nih_data_cache(
     return cached_file_paths
 
 
+def get_csv_data(years: list[str] | None):
+    cache_path = CacheHandler.get_cache_path()
+    zip_files = []
+    for p in cache_path.iterdir():
+        result = nih_exporter_file_regex.search(p.name) and p.suffix == ".zip"
+        if (years and result and result['years'] in years) or not years and result:
+            zip_files.append(p)
+
+    print(f"Loading {len(zip_files)} zip files for processing.")
+    for zip_file in zip_files:
+        with (zipfile.ZipFile(zip_file, mode='r') as zf):
+            candidates = [
+                info for info in zf.infolist()
+                if nih_exporter_file_regex.search(info.filename)
+                   and '.csv' in info.filename
+            ]
+            if candidates:
+                print(f"Found {", ".join(c.filename for c in candidates)} in {zf}")
+                target = candidates[0]
+                yield io.StringIO(zf.read(target).decode('utf-8'))
+            else:
+                raise NoCsvInZipFile(f"Could not find .csv file in {zip_file}.")
+
+def generate_nih_data_rows(years: list[str] | None) -> Generator[NIHExporterRow, None, None]:
+    zipped_data = get_csv_data(years)
+    for data in zipped_data:
+        reader = csv.DictReader(data, fieldnames=NIHExporterRowHeader)
+        for row in reader:
+            yield row
+
+
+def apply_header_rules(
+        row: NIHExporterRow,
+        include: set[NIHExporterHeader] | None,
+        exclude: set[NIHExporterHeader] | None):
+    if not (include or exclude):
+        return row
+
+    if include and exclude:
+        if (overlap := ((include - exclude) - (exclude - include))) != {}:
+            raise KeyError(f"Overlap found in keyset ({", ".join(overlap)}) - adjust applied rules.")
+    if include:
+        row = {k: v for k, v in row.items() if k in include}
+    if exclude:
+        row = {k: v for k, v in row.items() if k not in exclude}
+    return row
+    
+
+def process_nih_data(
+        years: list[str] | None = None,
+        include_headers: list[NIHExporterHeader] | None = None,
+        exclude_headers: list[NIHExporterHeader] | None = None,
+        n: int | None = None):
+
+    rows: Generator[NIHExporterRow, None, None] = (
+        apply_header_rules(r, include_headers, exclude_headers)
+        for r in generate_nih_data_rows(years)
+    )
+
+    n = n if n is not None else 999_999_999_999
+    i = 0
+
+    while n > i:
+        try:
+            row = next(rows)
+        except StopIteration:
+            break
+
+        if set(v.lower() for v in row.values()) == set(v.lower() for v in NIH_HEADER_SET):
+            i += 1
+            continue
+
+        try:
+            for key, value in row.items():
+                row[key] = parse_data(key, value, row_id=i)
+        except ValueError as e:
+            print(row)
+            raise e
+
+        project = build_project_instance(row)
+        print(row)
+        print([getattr(project, v) for v in project.__slots__])
+
+        i += 1
+
+def _unpack_diffs(d: tuple[set, int, int]):
+    diff, i, i2 = d
+    print(f"Found diff between schema at {i2} and {i}; diff == {sorted(diff)}")
+
+col = NIHExporterColumn()
+
+def build_dataframes(years: list[str] | None = None):
+    csv_data = get_csv_data(years)
+    schemas = []
+    dataframes = []
+
+    for block in csv_data:
+        df = pl.read_csv(block, infer_schema=True, infer_schema_length=100000)
+        s = df.schema
+
+        if "CFDA_CODE" in s.keys():
+            df = df.rename({"CFDA_CODE": "ASSISTANCE_LISTING_NUMBER"})
+
+        schemas.append(df.schema)
+        dataframes.append(df)
+        print(df.select(col("APPLICATION_ID").count()))
+
+    diffs = []
+    for i, schema in enumerate(schemas):
+        for i2, schema2 in enumerate(schemas):
+            if i == i2:
+                continue
+            if diff := schema2.keys() - schema.keys():
+                diffs.append((diff, i2, i))
+    if diffs:
+        for d in diffs:
+            _unpack_diffs(d)
+    else:
+        print("Schema names from all files are in sync.")
+
+
+
 if __name__ == "__main__":
-    build_nih_data_cache()
+    # build_nih_data_cache()
     # CacheHandler.delete_cache_directory()
+    build_dataframes()
