@@ -1,8 +1,9 @@
+from pathlib import Path
 
 from polars import (Int32, Schema, String, UInt8, UInt16, DataType)
-from NIHData.types import NIHExporterHeader
+from NIHData._types import NIHExporterHeader
 
-BASE_SCHEMA: Schema[NIHExporterHeader, DataType] = Schema(
+BASE_NIH_SCHEMA: Schema[NIHExporterHeader, DataType] = Schema(
     {'APPLICATION_ID': String,
      'ACTIVITY': String,
      'ADMINISTERING_IC': String,
@@ -51,33 +52,16 @@ BASE_SCHEMA: Schema[NIHExporterHeader, DataType] = Schema(
      'TOTAL_COST_SUB_PROJECT': Int32
      }
 )
-from pathlib import Path
-
-def _generate_columns(s: dict | Schema):
-    cols = []
-    for k in s.keys():
-        cols.append(f"{k.strip().replace(" ", "_")} = col(\"{k}\")")
-    print("\n".join(cols))
-
-
-
-
-def _initialize_generated_code_module():
-    directory = Path.cwd() / 'generated'
-    directory.mkdir(exist_ok=True)
-    init_py = (directory / "__init__.py")
-    init_py.touch()
-    return directory
 
 
 def _generate_variables(s: dict | Schema):
-    directory = Path.cwd() / 'generated'
+    directory = Path(__file__).parent / 'generated'
     directory.mkdir(exist_ok=True)
     init_py = (directory / "__init__.py")
     init_py.touch()
     generated_code_file = directory / "variables.py"
 
-    lines = ['import polars as pl\n\n',]
+    lines = ['import polars as pl\n\n', ]
 
     lines.extend([f"{k.strip().replace(" ", "_")} = \'{k}\'\n" for k in s.keys()])
     lines.append('\n\n')
@@ -93,8 +77,10 @@ def _generate_variables(s: dict | Schema):
 
     return generated_code_file
 
+
 def _main():
-    _generate_variables(BASE_SCHEMA)
+    _generate_variables(BASE_NIH_SCHEMA)
+
 
 if __name__ == '__main__':
     _main()
