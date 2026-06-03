@@ -1,7 +1,8 @@
 import datetime as dt
-from typing import Any
+from collections.abc import Sequence
 
-type ExporterRow = dict[str, Any]
+from NIHData._types import NIHExporterRow
+
 
 
 class ProjectTerm:
@@ -10,7 +11,7 @@ class ProjectTerm:
     term: str
     projects: list[str]
 
-    def __new__(cls, term: str, row: ExporterRow) -> ProjectTerm:
+    def __new__(cls, term: str, row: NIHExporterRow) -> ProjectTerm:
         if (existing := cls._registry.get(term)) is not None:
             existing.projects.append(row.get('APPLICATION_ID'))
             return existing
@@ -18,7 +19,7 @@ class ProjectTerm:
         instance = super().__new__(cls)
         instance.term = term
         instance.projects = []
-        instance.projects.append(row.get('APPLICATION_ID'))
+        instance.projects.append(row.get("APPLICATION_ID"))
         cls._registry[term] = instance
         return instance
 
@@ -51,7 +52,7 @@ class Person:
     _person_registry: dict[str, Person] = dict()
     _project_relationship_registry: dict[str, list[ProjectRole]] = dict()
 
-    def __new__(cls, *, nih_person_id: str, first_name: str, last_name: str, row: ExporterRow):
+    def __new__(cls, *, nih_person_id: str, first_name: str, last_name: str, row: NIHExporterRow):
         application_id = row['APPLICATION_ID']
         is_contact = "(contact)" in nih_person_id
         person_id = cls._clean_person_component(nih_person_id)
@@ -82,7 +83,7 @@ class Person:
         return c.replace("(contact)", "").strip()
 
     @classmethod
-    def build_people_from_row(cls, row: ExporterRow):
+    def build_people_from_row(cls, row: NIHExporterRow):
         iterator = zip(row.pop("PI_IDS"), row.pop("PI_NAMEs"))
         # (['7117069 (contact)'], ['CALHOUN', 'VINCE D (contact)'])
         # (['9409588'], ['LIU', 'JINGYU'])
@@ -101,7 +102,7 @@ class ProgramOfficer:
     __slots__ = ("po_id", "first_name", "last_name", "institute",)
     _registry = dict()
 
-    def __new__(cls, row: ExporterRow, institute: NihInstitute):
+    def __new__(cls, row: NIHExporterRow, institute: NihInstitute):
         parts: list[str] = row.get("PROGRAM_OFFICER_NAME")
         if not parts or not parts[0]:
             return None
@@ -130,8 +131,8 @@ class StudySection:
     name: str
     abbreviation: str
 
-    def __new__(cls, row: ExporterRow):
-        project_id = row['CORE_PROJECT_NUM']
+    def __new__(cls, row: NIHExporterRow):
+        project_id = row.get('CORE_PROJECT_NUM')
         name = row.get("STUDY_SECTION_NAME")
 
         if (instance := cls._registry.get(name)) is not None:
@@ -153,7 +154,7 @@ class NihInstitute:
     __slots__ = ("name", "abbreviation")
     _registry: dict[str, NihInstitute] = dict()
 
-    def __new__(cls, row: ExporterRow):
+    def __new__(cls, row: NIHExporterRow):
         name = row.get("IC_NAME")
         if (instance := cls._registry.get(name)) is not None:
             return instance
@@ -175,7 +176,7 @@ class Address:
         "organization_name", "city", "state", "zip_code", "country", "congressional_district",
     )
 
-    def __init__(self, organization_name: str, row: ExporterRow):
+    def __init__(self, organization_name: str, row: NIHExporterRow):
         self.organization_name = organization_name
         self.city = row.get("ORG_CITY")
         self.state = row.get("ORG_STATE")
@@ -201,7 +202,7 @@ class Organization:
     org_type: str
     addresses: list[Address]
 
-    def __new__(cls, row: ExporterRow):
+    def __new__(cls, row: NIHExporterRow):
         name: str = row.get("ORG_NAME")
         address = Address(name, row)
         if (instance := cls._registry.get(name)) is not None:
@@ -228,7 +229,7 @@ class Department:
     __slots__ = ("name", "organization_name")
     _registry: dict[tuple[str, str], Department] = dict()
 
-    def __new__(cls, row: ExporterRow):
+    def __new__(cls, row: NIHExporterRow):
         dept_name = row.get("ORG_DEPT")
         org_name = row.get("ORG_NAME")
 
@@ -252,7 +253,7 @@ class ProjectNarrative:
     value: str
     project_number: str
 
-    def __new__(cls, row: ExporterRow):
+    def __new__(cls, row: NIHExporterRow):
         value = row.get("PHR")
         core_project_num = row.get("CORE_PROJECT_NUM")
 
@@ -286,7 +287,7 @@ class BudgetPeriodSerialId:
         "core_project_number", "support_year", "suffix",
     )
 
-    def __init__(self, row: ExporterRow):
+    def __init__(self, row: NIHExporterRow):
         self.application_type: str = row.get("APPLICATION_TYPE")
         self.full_project_number: str = row.get("FULL_PROJECT_NUM")
         self.core_project_number: str = row.get("CORE_PROJECT_NUM")
@@ -302,7 +303,7 @@ class BudgetTotals:
         "direct_cost_amount", "indirect_cost_amount", "total_cost_amount", "total_cost_subproject"
     )
 
-    def __init__(self, row: ExporterRow):
+    def __init__(self, row: NIHExporterRow):
         self.direct_cost_amount = row.get("DIRECT_COST_AMT")
         self.indirect_cost_amount = row.get("INDIRECT_COST_AMT")
         self.total_cost_amount = row.get("TOTAL_COST")
@@ -317,7 +318,7 @@ class BudgetPeriod:
         "people", "project_terms", "organization", "department", "funding_institute", "study_section"
     )
 
-    def __init__(self, row: ExporterRow):
+    def __init__(self, row: NIHExporterRow):
         """
         Each row represents a budget period/additional funding. No need to deduplicate.
         """
@@ -352,7 +353,7 @@ class ProjectNumber:
     activity: str
     applications: list[str]
 
-    def __new__(cls, row: ExporterRow):
+    def __new__(cls, row: NIHExporterRow):
         core_project_number: str = row.get("CORE_PROJECT_NUM")
         application_id: str = row.get("APPLICATION_ID")
 
@@ -372,15 +373,35 @@ class ProjectNumber:
     def __hash__(self):
         return hash(self.value)
 
+
 class SubprojectInfo:
-    def __new__(cls, row: ExporterRow):
-        core_project_number: str = row.get("CORE_PROJECT_NUM")
-        
+    __slots__ = ("subproject_id", "core_project_id", "support_year", "budget")
+    _registry: dict[tuple[ProjectNumber, str, str], SubprojectInfo] = dict()
+
+    subproject_id: str
+    core_project_id: str
+    support_year: str
+    budget: BudgetTotals
+
+    def __new__(cls, row: NIHExporterRow):
+        subproject_id = row.get("SUBPROJECT_ID", None)
+        if not subproject_id:
+            return None
+        support_year = row.get("SUPPORT_YEAR")
+        core_project_id = ProjectNumber(row)
+        if (instance := cls._registry.get((core_project_id, subproject_id, support_year))) is not None:
+            return instance
 
         instance = super().__new__(cls)
-
+        instance.subproject_id = subproject_id
+        instance.core_project_id = core_project_id
+        instance.support_year = support_year
+        instance.budget = BudgetTotals(row)
 
         return instance
+
+    def __hash__(self):
+        return hash((self.core_project_id, self.subproject_id, self.support_year))
 
 
 class ProjectInfo:
@@ -392,7 +413,7 @@ class ProjectInfo:
     title: str
     arra_funded: bool
 
-    def __init__(self, row: ExporterRow):
+    def __init__(self, row: NIHExporterRow):
         self.opportunity_number = row.get("OPPORTUNITY NUMBER")
         self.assistance_listing_number = row.get("ASSISTANCE_LISTING_NUMBER")
         self.start_date = row.get("PROJECT_START")
@@ -400,23 +421,26 @@ class ProjectInfo:
         self.title = row.get("PROJECT_TITLE")
         self.arra_funded = row.get("ARRA_FUNDED")
 
-
-
 class Project:
-    __slots__ = ("info", "budget_periods", "project_number", "narrative")
+    __slots__ = ("info", "budget_periods", "project_number", "narrative", "subprojects")
     _registry: dict[ProjectNumber, Project] = dict()
 
     info: ProjectInfo
     project_number: ProjectNumber
     budget_periods: list[BudgetPeriod]
     narrative: ProjectNarrative
+    subprojects: dict[str, list[SubprojectInfo]] | None
 
-    def __new__(cls, row: ExporterRow):
+    def __new__(cls, row: NIHExporterRow):
         project_number = ProjectNumber(row)
         if (instance := cls._registry.get(project_number)) is not None:
             bp = BudgetPeriod(row)
             if bp not in instance.budget_periods:
                 instance.budget_periods.append(bp)
+            subproject = SubprojectInfo(row)
+            if subproject:
+                instance.subprojects.setdefault(subproject.support_year, []).append(subproject)
+
             return instance
 
         instance = super().__new__(cls)
@@ -425,9 +449,14 @@ class Project:
         instance.project_number = project_number
         instance.budget_periods = [BudgetPeriod(row), ]
         instance.narrative = ProjectNarrative(row)
+        instance.subprojects = dict()
+        subproject = SubprojectInfo(row)
+        if subproject:
+            instance.subprojects.setdefault(subproject.support_year, []).append(subproject)
+
         return instance
 
 
-def build_project_instance(row: ExporterRow):
+def build_project_instance(row: NIHExporterRow):
     """Public method to construct instances of Project."""
     return Project(row)
