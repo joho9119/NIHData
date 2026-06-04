@@ -383,11 +383,24 @@ def build_object_frames(df: pl.DataFrame) -> NIHObjectFrames:
     )
 
 
-def _main():
+def build_all_frames() -> NIHObjectFrames:
+    """Build the object frames for ALL cached years and refresh the DUNS->UEI map.
+
+    The "all" frame is the canonical full graph, so regenerating it also refreshes the
+    DUNS->UEI crosswalk (it may surface organizations not seen before). See
+    ``NIHData.crosswalk``.
+    """
     from NIHData.processing import build_dataframe_from_csv_data
+    from NIHData.crosswalk import build_duns_uei_map
 
     df = build_dataframe_from_csv_data()
     frames = build_object_frames(df)
+    build_duns_uei_map(df)  # condition (b): a new 'all' frame refreshes the crosswalk
+    return frames
+
+
+def _main():
+    frames = build_all_frames()
     for name in NIHObjectFrames.__dataclass_fields__:
         frame: pl.DataFrame = getattr(frames, name)
         print(f"{name:<20} {frame.shape}")
