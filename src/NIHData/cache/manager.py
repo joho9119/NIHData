@@ -2,14 +2,18 @@ import csv
 import datetime as dt
 import io
 import re
+import tempfile
 import zipfile
 from collections.abc import Generator
 from pathlib import Path
 
-from NIHData.cache.env import create_cache_directory, get_cache_path
-from NIHData.parser.objects import build_project_instance
-from NIHData.parser.fields import parse_data
-from NIHData._types import NIHExporterHeader, NIH_HEADER_SET, NIHExporterRow, NIHExporterRowHeader
+import polars as pl
+
+from NIHData.cache.env import (
+    create_cache_directory, get_cache_path,
+    NIH_CACHE_ENV_VAR_NAME, NIH_CACHE_ENV_FILE_NAME,
+)
+from NIHData._types import NIHExporterRow, NIHExporterRowHeader
 from NIHData.errors import (
     EnvFileDoesNotExist, EnvVarDoesNotExist,
     CacheDoesNotExist, NoValidSearchLocations,
@@ -19,9 +23,14 @@ from NIHData.errors import (
 nih_exporter_file_regex = re.compile(r"^RePORTER_PRJ_C_FY(?P<year>\d{4})(?P<filetype>\.[^0-9.]+)$", re.I)
 """Name of the typical file target. The csv file within the zip also follows this naming convention."""
 
-NIH_DATA_CACHE = ".nih_data_cache"
-NIH_CACHE_ENV_VAR_NAME = 'NIH_DATA_CACHE_DIR'
-NIH_CACHE_ENV_FILE_NAME = f".nih_data_cache.env"
+# Assume that last year's data is published roughly around start of the current year
+# Or at least flag that the user should check
+current_year_post_mil = dt.datetime.now().year - 2000
+
+# NIH data format changed in year 2000; there is very little meaningful data
+# prior to this, and 25+ years is enough for the vast majority of analyses.
+years_that_can_be_processed = {2000 + y for y in range(current_year_post_mil)}
+
 
 def find_nih_data(check_locations: str | Path | list[str | Path] | None = None, suppress_warnings: bool = False) -> \
         list[Path]:
@@ -118,14 +127,6 @@ def find_nih_data(check_locations: str | Path | list[str | Path] | None = None, 
         print("\n".join(year_gaps))
         print("")
 
-    current_year_post_mil = dt.datetime.now().year - 2000
-    # Assume that last year's data is published roughly around start of the current year
-    # Or at least flag that the user should check
-
-    years_that_can_be_processed = {2000 + y for y in range(current_year_post_mil)}
-    # NIH data format changed in year 2000; there is very little meaningful data
-    # prior to this, and 25+ years is enough for the vast majority of analyses.
-
     missing = sorted(years_that_can_be_processed - {int(y) for y in years})
     if missing:
         print(
@@ -144,8 +145,9 @@ def find_nih_data(check_locations: str | Path | list[str | Path] | None = None, 
             case 1:
                 files_found.append(zip_files[0])
             case _:
-                if cache_dir and cache_dir.exists() and [f for f in zip_files if f.root == cache_dir.root][:]:
-                    files_found.append([f for f in zip_files if f.root == cache_dir.root][:][0])
+                cached_dupes = [f for f in zip_files if f.parent == cache_dir] if cache_dir else []
+                if cache_dir and cache_dir.exists() and cached_dupes:
+                    files_found.append(cached_dupes[0])
                 else:
                     # we know here that zip files exist as the guard is the first case
                     files_found.append(zip_files[0])
@@ -174,8 +176,8 @@ def build_nih_data_cache(
     """
     cache_path = create_cache_directory(cache_path)
     nih_data_files = find_nih_data(file_locations)
-    files_pulled_from = {f.root for f in nih_data_files}
-    files_pulled_from.discard(cache_path.name)  # Discard instead of remove so we're not throwing an error.
+    files_pulled_from = {f.parent for f in nih_data_files}
+    files_pulled_from.discard(cache_path)  # Discard instead of remove so we're not throwing an error.
 
     existing_cache = {f.name for f in cache_path.iterdir() if nih_exporter_file_regex.search(f.name)}
     print(f"Existing files in cache: {existing_cache}")
@@ -216,87 +218,130 @@ def build_nih_data_cache(
     return cached_file_paths
 
 
-def get_csv_data(years: list[str] | None):
-    cache_path = get_cache_path()
-    zip_files = []
-    for p in cache_path.iterdir():
-        result = nih_exporter_file_regex.search(p.name)
-        if (years and result and result['year'] in years) or not years and result:
-            zip_files.append(p)
+class CacheConfig:
+    processable_years: set[int] = years_that_can_be_processed
+    current_year_num: int = current_year_post_mil
+    min_year_processable: int = min(processable_years)
+    max_year_processable: int = max(processable_years)
 
-    print(f"Loading {len(zip_files)} zip files for processing.")
-    for zip_file in zip_files:
-        with (zipfile.ZipFile(zip_file, mode='r') as zf):
-            candidates = [
-                info for info in zf.infolist()
-                if nih_exporter_file_regex.search(info.filename)
-                   and '.csv' in info.filename
-            ]
-            if candidates:
-                print(f"Found {", ".join(c.filename for c in candidates)} in {zf.filename}")
+    def __init__(self, years: list | None):
+        self.years_requested: list[int] = (
+            sorted(int(y) for y in years) if years
+            else sorted(years_that_can_be_processed)
+        )
+        self.min_year_requested = min(self.years_requested)
+        self.max_year_requested = max(self.years_requested)
+        self.gaps = self._determine_gaps()
+
+    def _determine_gaps(self) -> list[int]:
+        years = self.years_requested  # already a sorted list[int]
+        gaps: list[int] = []
+        for i, year in enumerate(years):
+            if i == 0:
+                continue
+            prior = years[i - 1]
+            if year - prior > 1:
+                gaps.extend(range(prior + 1, year))
+        return gaps
+
+
+class CacheResult:
+    """
+    Yields generator of csv data for each zip file found. Min year/max year is maintained as state.
+    """
+    def __init__(self, years: list | None):
+        self.config = CacheConfig(years)
+
+        self._zip_by_year: dict[str, Path] = {}
+
+        for p in get_cache_path().iterdir():
+            result = nih_exporter_file_regex.search(p.name)
+            if result and result['filetype'] == '.zip':
+                file_year = result['year']
+                if (not years) or (file_year in years):
+                    self._zip_by_year[file_year] = p
+
+        self.years_found: list[str] = sorted(self._zip_by_year)
+        self.zip_files: list[Path] = [self._zip_by_year[y] for y in self.years_found]
+        self.min_year = min(self.years_found)
+        self.max_year = max(self.years_found)
+
+    def __repr__(self):
+        return str(self)
+
+    def __str__(self):
+        return f"CacheResult(Years=[{", ".join(self.years_found)}])"
+
+    def yield_csv(self):
+        print(f"Loading {len(self.zip_files)} zip files for processing.")
+        for zip_file in self.zip_files:
+            with (zipfile.ZipFile(zip_file, mode='r') as zf):
+                candidates = [
+                    info for info in zf.infolist()
+                    if nih_exporter_file_regex.search(info.filename)
+                       and '.csv' in info.filename
+                ]
+                if candidates:
+                    target = candidates[0]
+                    yield io.StringIO(zf.read(target).decode('utf-8'))
+                else:
+                    raise NoCsvInZipFile(f"Could not find .csv file in {zip_file}.")
+
+    def yield_csv_files(self) -> Generator[tuple[str, Path], None, None]:
+        """
+        Extract each zip's CSV to a temporary file and yield ``(year, csv_path)``.
+
+        Unlike :meth:`yield_csv`, this does not read the whole CSV into memory, so the
+        consumer can hand the path to ``pl.scan_csv`` and stream. Each temp file lives only
+        until the generator advances to the next zip, so the consumer must finish using the
+        path (e.g. ``sink_parquet`` / ``collect``) before requesting the next item.
+        """
+        print(f"Loading {len(self.zip_files)} zip files for processing.")
+        for year in self.years_found:
+            zip_file = self._zip_by_year[year]
+            with zipfile.ZipFile(zip_file, mode='r') as zf:
+                candidates = [
+                    info for info in zf.infolist()
+                    if nih_exporter_file_regex.search(info.filename)
+                       and '.csv' in info.filename
+                ]
+                if not candidates:
+                    raise NoCsvInZipFile(f"Could not find .csv file in {zip_file}.")
                 target = candidates[0]
-                yield io.StringIO(zf.read(target).decode('utf-8'))
-            else:
-                raise NoCsvInZipFile(f"Could not find .csv file in {zip_file}.")
+                with tempfile.TemporaryDirectory() as tmpdir:
+                    zf.extract(target, tmpdir)
+                    yield year, Path(tmpdir) / target.filename
+
+    def as_dict_rows(self) -> Generator[NIHExporterRow, None, None]:
+        for data in self.yield_csv():
+            reader = csv.DictReader(data, fieldnames=NIHExporterRowHeader)
+            for row in reader:
+                yield row
+                
+    def get_parquet_path_for_year(self, year: str | int) -> Path:
+        """One parquet per year, e.g. ``2020.parquet`` — avoids misleading range names."""
+        return get_cache_path() / f"{year}.parquet"
+
+    def existing_parquet_paths(self) -> list[Path]:
+        """Per-year parquet paths (for the requested years) that already exist on disk."""
+        return [
+            p for y in self.years_found
+            if (p := self.get_parquet_path_for_year(y)).exists()
+        ]
+
+    def get_parquet_lf(self) -> pl.LazyFrame:
+        paths = self.existing_parquet_paths()
+        if not paths:
+            raise FileNotFoundError(
+                "No per-year parquet files exist yet. Parse csv and write to the cache first."
+            )
+        return pl.scan_parquet(paths)
+
+    def get_parquet_df(self) -> pl.DataFrame:
+        return self.get_parquet_lf().collect()
 
 
-def generate_nih_data_rows(years: list[str] | None) -> Generator[NIHExporterRow, None, None]:
-    zipped_data = get_csv_data(years)
-    for data in zipped_data:
-        reader = csv.DictReader(data, fieldnames=NIHExporterRowHeader)
-        for row in reader:
-            yield row
 
-
-def apply_header_rules(
-        row: NIHExporterRow,
-        include: set[NIHExporterHeader] | None,
-        exclude: set[NIHExporterHeader] | None):
-    if not (include or exclude):
-        return row
-
-    if include and exclude:
-        if (overlap := ((include - exclude) - (exclude - include))) != {}:
-            raise KeyError(f"Overlap found in keyset ({", ".join(overlap)}) - adjust applied rules.")
-    if include:
-        row = {k: v for k, v in row.items() if k in include}
-    if exclude:
-        row = {k: v for k, v in row.items() if k not in exclude}
-    return row
-
-
-def process_nih_data(
-        years: list[str] | None = None,
-        include_headers: list[NIHExporterHeader] | None = None,
-        exclude_headers: list[NIHExporterHeader] | None = None,
-        n: int | None = None):
-    rows: Generator[NIHExporterRow, None, None] = (
-        apply_header_rules(r, include_headers, exclude_headers)
-        for r in generate_nih_data_rows(years)
-    )
-
-    n = n if n is not None else 999_999_999_999
-    i = 0
-
-    while n > i:
-        try:
-            row = next(rows)
-        except StopIteration:
-            break
-
-        if set(v.lower() for v in row.values()) == set(v.lower() for v in NIH_HEADER_SET):
-            i += 1
-            continue
-
-        try:
-            for key, value in row.items():
-                row[key] = parse_data(key, value, row_id=i)
-        except ValueError as e:
-            print(row)
-            raise e
-
-        project = build_project_instance(row)
-        print(row)
-        print([getattr(project, v) for v in project.__slots__])
-
-        i += 1
+def get_cache_result(years: list[str] | None):
+    """Factory for CacheResult class."""
+    return CacheResult(years)
