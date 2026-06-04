@@ -6,7 +6,7 @@ drifts out of sync.
 """
 import polars as pl
 
-from NIHData._types import NIH_HEADER_SET, NIHExporterRowHeader
+from NIHData.domain.types import NIH_HEADER_SET, NIHExporterRowHeader
 from NIHData.schemas import BASE_NIH_SCHEMA
 from NIHData.columns import NIHDataColumn
 

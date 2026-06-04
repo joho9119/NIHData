@@ -11,10 +11,9 @@ import polars as pl
 
 from NIHData.cache.env import (
     create_cache_directory, get_cache_path,
-    NIH_CACHE_ENV_VAR_NAME, NIH_CACHE_ENV_FILE_NAME,
 )
-from NIHData._types import NIHExporterRow, NIHExporterRowHeader
-from NIHData.errors import (
+from NIHData.domain.types import NIHExporterRow, NIHExporterRowHeader
+from NIHData.domain.errors import (
     EnvFileDoesNotExist, EnvVarDoesNotExist,
     CacheDoesNotExist, NoValidSearchLocations,
     NoCsvInZipFile,

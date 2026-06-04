@@ -1,7 +1,7 @@
 from pathlib import Path
 
 from polars import (Int32, Schema, String, UInt8, UInt16, DataType)
-from NIHData._types import NIHExporterHeader
+from NIHData.domain.types import NIHExporterHeader
 
 BASE_NIH_SCHEMA: Schema[NIHExporterHeader, DataType] = Schema(
     {'APPLICATION_ID': String,

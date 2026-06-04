@@ -1,5 +1,5 @@
 from pathlib import Path
-from NIHData.errors import CacheDoesNotExist, EnvFileDoesNotExist, EnvVarDoesNotExist
+from NIHData.domain.errors import CacheDoesNotExist, EnvFileDoesNotExist, EnvVarDoesNotExist
 
 NIH_CACHE_ENV_VAR_NAME = 'NIH_DATA_CACHE_DIR'
 NIH_CACHE_ENV_FILE_NAME = ".nih_data_cache.env"
