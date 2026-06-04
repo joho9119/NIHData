@@ -1,14 +1,16 @@
-"""Polars counterpart to ``parser/objects.py``.
-
-The object-graph parser builds an interned graph of Python objects (``Project``,
+"""
+This object-graph parser builds an interned graph of Python objects (``Project``,
 ``BudgetPeriod``, ``Person`` ...) one row at a time.  This module reproduces the
 *shape* of that graph as a set of normalized polars ``DataFrame``s derived from
-the single wide base frame produced by
-``processing.build_dataframe_from_csv_data`` (one CSV row == one budget period).
+the single wide base frame produced by ``processing.build_dataframe_from_csv_data``
+
+In the NIH ExPORTER data, one CSV row is equivalent to one budget period. This means
+that the individual objects must be extracted from each row or standardized/queryable
+on their unique identifier.
 
 Each object class maps to one frame:
 
-    parser/objects.py            objects.py frame        grain
+    parser/objects.py            objects.py frame        grain/identifier
     -----------------            ---------------         -----
     ProjectNumber + ProjectInfo  projects               unique CORE_PROJECT_NUM
         + ProjectNarrative
@@ -24,7 +26,7 @@ Each object class maps to one frame:
     Department                   departments            unique (dept, org)
     ProjectNarrative             project_narratives     unique (core_num, value)
     SubprojectInfo               subprojects            unique (core, sub, year)
-    ProjectTerm                  project_terms          unique term -> applications
+    ProjectTerm                  project_terms          unique term -> applications (M2M / graph)
 
 The per-field transforms in ``parser/fields.py`` are expressed here as polars
 expressions:
